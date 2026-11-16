@@ -1,0 +1,57 @@
+name: Build DS3 Bluetooth test package
+
+on:
+  push:
+    branches:
+      - feature/ds3-bluetooth
+    paths:
+      - 'daemon/**'
+      - 'app/**'
+      - 'include/**'
+      - 'scripts/**'
+      - 'build_release.sh'
+      - '.github/workflows/ds3-bluetooth-release.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install compiler tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+
+      - name: Download OpenOrbis PS4 Toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/openorbis"
+          curl --fail --location --retry 3 \
+            https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/v0.5.4.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/openorbis"
+          echo "OO_PS4_TOOLCHAIN=$RUNNER_TEMP/openorbis" >> "$GITHUB_ENV"
+
+      - name: Build and validate PKG
+        run: bash scripts/build_release.sh
+
+      - name: Publish test prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.2.3-ds3-bluetooth-fw1400-preview.1
+          target_commitish: ${{ github.sha }}
+          name: OneFamily v1.2.3 — DS3 Bluetooth FW 14.00 test
+          prerelease: true
+          body: |
+            Test build for PlayStation 4 firmware 14.00.
+
+            DS3 Bluetooth support is experimental and requires the controller to be paired with the console already. It needs console validation before it can be considered stable.
+          files: |
+            bin/onefamily_companion.pkg
+            bin/onefamily_companion.pkg.sha256

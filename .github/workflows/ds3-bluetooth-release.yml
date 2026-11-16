@@ -41,6 +41,8 @@ jobs:
 
       - name: Build and validate PKG
         run: bash scripts/build_release.sh
+        env:
+          DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1'
 
       - name: Publish test prerelease
         uses: softprops/action-gh-release@v2

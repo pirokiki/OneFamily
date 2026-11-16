@@ -18,6 +18,7 @@
 
 // Sony DualSense Identifiers
 #define SONY_VID                 0x054C
+#define SONY_DUALSHOCK3_PID      0x0268
 #define SONY_DUALSENSE_PID       0x0CE6
 #define SONY_DUALSENSE_EDGE_PID  0x0DF2
 
@@ -37,6 +38,7 @@ static int s_bt_queue = -1;
 static bool s_bt_registered = false;
 static int s_bt_reg_count = 0;
 static int s_bt_edge_reg_count = 0;
+static int s_bt_ds3_reg_count = 0;
 static bool s_bt_supported = false;
 static uint32_t s_current_fw_bcd = 0x1250;
 static uint32_t s_discovered_lock = 0;
@@ -54,6 +56,7 @@ typedef struct {
 
 typedef struct {
     uint64_t address;         // Bluetooth MAC address (0 = free entry)
+    uint16_t product_id;      // 0x0268 for DS3, 0x0CE6/0x0DF2 for DualSense
     int      vpad_slot;       // virtual pad slot index (0..3, or -1)
     bool     connected;       // reports currently arriving
     bool     extended_mode;   // true once 78-byte 0x31 reports are active
@@ -81,6 +84,8 @@ typedef struct {
     bool     initialized_output;
     bool     capacity_patched;
     uint32_t original_capacity;
+    uint64_t capacity_retry_at;
+    uint8_t  capacity_attempts;
     uint32_t output_errors;
     bool     output_unsupported;
 } BtDevice;
@@ -160,18 +165,23 @@ static BtDevice* bt_dev_find(uint64_t address) {
     return NULL;
 }
 
-static BtDevice* bt_dev_acquire(uint64_t address) {
+static BtDevice* bt_dev_acquire(uint64_t address, uint16_t product_id) {
     BtDevice *dev = bt_dev_find(address);
-    if (dev) return dev;
+    if (dev) {
+        if (dev->product_id && product_id && dev->product_id != product_id) return NULL;
+        if (!dev->product_id) dev->product_id = product_id;
+        return dev;
+    }
     if (!address) return NULL;
 
     for (int i = 0; i < BT_MAX_DEVICES; ++i) {
         if (s_devices[i].address == 0) {
             bt_device_init_entry(&s_devices[i]);
             s_devices[i].address = address;
+            s_devices[i].product_id = product_id;
             s_devices[i].last_input_time = daemon_sys_time_us();
-            daemon_log(LOG_LEVEL_INFO, "DualSense BT: new device 0x%llX (entry %d)",
-                       (unsigned long long)address, i);
+            daemon_log(LOG_LEVEL_INFO, "Bluetooth controller %04X:%04X: new device (entry %d)",
+                       SONY_VID, product_id, i);
             return &s_devices[i];
         }
     }
@@ -190,12 +200,12 @@ static BtDevice* bt_dev_acquire(uint64_t address) {
                    BT_MAX_DEVICES, (unsigned long long)oldest->address, oldest->vpad_slot,
                    (unsigned long long)address);
         bt_dev_release(oldest);
-        return bt_dev_acquire(address);
+        return bt_dev_acquire(address, product_id);
     }
 
     daemon_log(LOG_LEVEL_WARN,
-               "DualSense BT: all %d device entries in use and connected, ignoring address 0x%llX",
-               BT_MAX_DEVICES, (unsigned long long)address);
+               "Bluetooth controller %04X:%04X: all %d entries in use and connected; ignoring device",
+               SONY_VID, product_id, BT_MAX_DEVICES);
     return NULL;
 }
 
@@ -678,6 +688,8 @@ struct CapacityRequest {
     uint64_t address;
     uint32_t restore;
     uint32_t original;
+    uint16_t product_id;
+    uint16_t target_capacity;
     uint32_t lock_off;
     uint32_t unlock_off;
 };
@@ -696,6 +708,9 @@ static int controller_capacity(void* thread, struct CapacityArgs* args) {
 
     struct CapacityRequest* r = args->request;
     if (!r->address || (r->address >> 48) || r->restore > 1) return 22;
+    if (!((r->product_id == SONY_DUALSHOCK3_PID && r->target_capacity == 49) ||
+          ((r->product_id == SONY_DUALSENSE_PID || r->product_id == SONY_DUALSENSE_EDGE_PID) &&
+           r->target_capacity == 78))) return 22;
 
     int (*lock)(void) = r->lock_off ? (void*)(base + r->lock_off) : NULL;
     int (*unlock)(int) = r->unlock_off ? (void*)(base + r->unlock_off) : NULL;
@@ -721,8 +736,7 @@ static int controller_capacity(void* thread, struct CapacityArgs* args) {
             uint8_t* device = *(void**)(link + 0x638);
             if (!device || ((uint64_t)device >> 48) != 0xFFFF ||
                 *(volatile uint16_t*)(device + 0x28) != 0x054C ||
-                (*(volatile uint16_t*)(device + 0x2A) != 0x0CE6 &&
-                 *(volatile uint16_t*)(device + 0x2A) != 0x0DF2)) {
+                *(volatile uint16_t*)(device + 0x2A) != r->product_id) {
                 break;
             }
 
@@ -742,7 +756,7 @@ static int controller_capacity(void* thread, struct CapacityArgs* args) {
                 rc = 0;
             } else {
                 r->original = *capacity;
-                *capacity = 78;
+                *capacity = r->target_capacity;
                 rc = 0;
             }
             break;
@@ -763,8 +777,7 @@ static int controller_capacity(void* thread, struct CapacityArgs* args) {
                 uint8_t* device = *(void**)(link + 0x638);
                 if (!device || ((uint64_t)device >> 48) != 0xFFFF ||
                     *(volatile uint16_t*)(device + 0x28) != 0x054C ||
-                    (*(volatile uint16_t*)(device + 0x2A) != 0x0CE6 &&
-                     *(volatile uint16_t*)(device + 0x2A) != 0x0DF2)) {
+                    *(volatile uint16_t*)(device + 0x2A) != r->product_id) {
                     break;
                 }
 
@@ -784,7 +797,7 @@ static int controller_capacity(void* thread, struct CapacityArgs* args) {
                     rc = 0;
                 } else {
                     r->original = *capacity;
-                    *capacity = 78;
+                    *capacity = r->target_capacity;
                     rc = 0;
                 }
                 break;
@@ -807,13 +820,15 @@ static int apply_controller_capacity(BtDevice* dev, int restore) {
         .address = dev->address,
         .restore = restore ? 1U : 0U,
         .original = restore ? dev->original_capacity : 0U,
+        .product_id = dev->product_id,
+        .target_capacity = dev->product_id == SONY_DUALSHOCK3_PID ? 49 : 78,
         .lock_off = s_discovered_lock,
         .unlock_off = s_discovered_unlock
     };
     long rc = daemon_syscall(SYS_KEXEC, (long)controller_capacity, (long)&req, 0);
     if (rc == 0) {
         if (!restore) {
-            if (req.original != 78 || dev->original_capacity == 0) {
+            if (req.original != req.target_capacity || dev->original_capacity == 0) {
                 dev->original_capacity = req.original;
             }
             dev->capacity_patched = true;
@@ -876,15 +891,24 @@ static void bt_write_status_file(void) {
     if (fd >= 0) {
         char buf[1024];
         int count = bt_driver_connected_count();
+        const BtDevice *active = NULL;
+        for (int i = 0; i < BT_MAX_DEVICES; ++i) {
+            if (s_devices[i].connected) { active = &s_devices[i]; break; }
+        }
+        int is_ds3 = active && active->product_id == SONY_DUALSHOCK3_PID;
         int offset = snprintf(buf, sizeof(buf),
             "connected = %d\n"
-            "type = dualsense_bt\n"
+            "type = %s\n"
             "vid = 0x054C\n"
-            "pid = 0x0CE6\n"
-            "name = DualSense Wireless\n"
+            "pid = 0x%04X\n"
+            "name = %s\n"
             "nbuttons = 16\n"
             "count = %d\n",
-            count > 0 ? 1 : 0, count);
+            count > 0 ? 1 : 0,
+            is_ds3 ? "ds3_bt" : "dualsense_bt",
+            is_ds3 ? SONY_DUALSHOCK3_PID : SONY_DUALSENSE_PID,
+            is_ds3 ? "DualShock 3 Wireless" : "DualSense Wireless",
+            count);
 
         for (int i = 0; i < BT_MAX_DEVICES && offset < (int)sizeof(buf) - 120; ++i) {
             if (s_devices[i].connected) {
@@ -1007,6 +1031,60 @@ static void extended_sample(BtDevice* dev, OrbisPadData* ds4, const uint8_t* rep
 // -------------------------------------------------------------
 // Bluetooth Report 0x31 / 0x01 Decoder
 // -------------------------------------------------------------
+
+static void bt_activate_ds3(BtDevice *dev) {
+    if (!dev || !dev->address || dev->product_id != SONY_DUALSHOCK3_PID || s_bt_fd < 0) return;
+
+    /* The DS3 uses its Bluetooth F4 feature report to enter operational mode.
+     * This is distinct from the USB wake packet used by usb_driver.c. */
+    uint8_t payload[5] = { 0x42, 0x03, 0x00, 0x00, 0x00 };
+    struct {
+        uint64_t address;
+        void* buffer;
+        uint64_t size;
+        uint64_t report_id;
+    } request = { dev->address, payload, sizeof(payload), 0xF4 };
+
+    long rc = daemon_syscall(SYS_IOCTL, s_bt_fd, 0x80206231UL, (long)&request);
+    daemon_log(rc == 0 ? LOG_LEVEL_INFO : LOG_LEVEL_WARN,
+               "DualShock 3 BT activation report submitted (result=%ld)", rc);
+}
+
+static void decode_ds3_bt_report(BtDevice *dev, const uint8_t *report, size_t length) {
+    if (!dev || !report || length != sizeof(DS3Report) || report[0] != 0x01) {
+        if (dev) dev->decode_drops++;
+        return;
+    }
+
+    if (!dev->connected) {
+        if (dev->vpad_slot >= 0) {
+            dev->connected = true;
+            dev->away_since = 0;
+            vpad_reactivate_slot(dev->vpad_slot);
+            daemon_log(LOG_LEVEL_INFO, "controller_reconnected: DualShock 3 Bluetooth");
+        } else if (vpad_slot_open_dev(VPAD_SOURCE_BT, dev->address, &dev->vpad_slot) != 0 || dev->vpad_slot < 0) {
+            daemon_log(LOG_LEVEL_WARN, "DualShock 3 BT: no virtual pad slot available");
+            dev->vpad_slot = -1;
+            return;
+        } else {
+            dev->connected = true;
+            int player = vpad_get_assigned_slot_num(dev->vpad_slot);
+            daemon_notify("OneFamily: DualShock 3 Wireless (Player %d)", player);
+            daemon_log(LOG_LEVEL_INFO, "controller_connected: DualShock 3 Bluetooth (Player %d)", player);
+        }
+        bt_write_status_file();
+    }
+
+    dev->last_input_time = daemon_sys_time_us();
+    DS3Report ds3;
+    memcpy(&ds3, report, sizeof(ds3));
+    OrbisPadData pad;
+    translator_convert_ds3(&ds3, &pad, NULL);
+    pad.connected = 1;
+    pad.timestamp = dev->last_input_time;
+    dev->last_pad_data = pad;
+    vpad_send_data_slot(dev->vpad_slot, &pad);
+}
 
 static void decode_dualsense_bt_report(BtDevice* dev, const uint8_t* report, size_t length) {
     static const uint32_t dpad_map[9] = {
@@ -1339,12 +1417,30 @@ void bt_driver_poll_step(void) {
 
     uint64_t now_us = daemon_sys_time_us();
 
+    /* A newly connected DS3 may not have a published bthid link during its
+     * first connection event. Retry the guarded per-link capacity adjustment
+     * briefly instead of losing the initial report window. */
+    if (s_current_fw_bcd == 0x1400) {
+        for (int i = 0; i < BT_MAX_DEVICES; ++i) {
+            BtDevice *dev = &s_devices[i];
+            if (dev->product_id != SONY_DUALSHOCK3_PID || !dev->address ||
+                dev->capacity_patched || dev->capacity_attempts >= 8 || now_us < dev->capacity_retry_at) continue;
+            dev->capacity_attempts++;
+            dev->capacity_retry_at = now_us + 250000ULL;
+            int cap_rc = apply_controller_capacity(dev, 0);
+            daemon_log(cap_rc == 0 ? LOG_LEVEL_INFO : LOG_LEVEL_WARN,
+                       "DualShock 3 BT link capacity attempt %u/8 (target=49, result=%d)",
+                       dev->capacity_attempts, cap_rc);
+        }
+    }
+
     // Periodic Bluetooth output report keep-alive heartbeat (every 500ms, or immediately on initial connection)
     // Strictly gated on devices where controller_capacity (78-byte output report size) is active.
     // Paces keep-alive reports at 500ms to preserve Bluetooth Active Mode (Exit Sniff Mode) for crackle-free audio.
     for (int i = 0; i < BT_MAX_DEVICES; ++i) {
         BtDevice *dev = &s_devices[i];
-        if (g_daemon_config.dualsense_bt_mode == 1 && dev->connected && dev->address && dev->capacity_patched && !dev->output_unsupported) {
+        if (dev->product_id != SONY_DUALSHOCK3_PID && g_daemon_config.dualsense_bt_mode == 1 &&
+            dev->connected && dev->address && dev->capacity_patched && !dev->output_unsupported) {
             uint64_t interval = dev->initialized_output ? 500000ULL : 20000ULL;
             if (now_us - dev->last_output_time >= interval) {
                 bt_send_rumble_dev(dev, 0, 0, dev->last_color);
@@ -1433,7 +1529,11 @@ void bt_driver_poll_step(void) {
                             daemon_log(LOG_LEVEL_INFO, "DualSense BT (0x%llX): input packet #%u (res=%ld, id=0x%02X, len=%zu)",
                                        (unsigned long long)dev->address, dev->reports_seen, result, (report + 2)[0], (size_t)(result - 2));
                         }
-                        decode_dualsense_bt_report(dev, report + 2, (size_t)(result - 2));
+                        if (dev->product_id == SONY_DUALSHOCK3_PID && report[1] == 0x1F && result == 51) {
+                            decode_ds3_bt_report(dev, report + 2, 49);
+                        } else {
+                            decode_dualsense_bt_report(dev, report + 2, (size_t)(result - 2));
+                        }
                     } else {
                         static uint32_t s_fallback_drop_cnt = 0;
                         if (s_fallback_drop_cnt < 5 || (s_fallback_drop_cnt % 500 == 0)) {
@@ -1455,9 +1555,40 @@ void bt_driver_poll_step(void) {
             uint8_t ev_type = buffer[pos];
             if (ev_type < 0x18 || ev_type > 0x20) continue;
 
+            uint32_t vendor_product = 0;
+            memcpy(&vendor_product, buffer + pos + 4, sizeof(vendor_product));
+            uint16_t event_vendor = (uint16_t)(vendor_product >> 16);
+            uint16_t product_id = (uint16_t)vendor_product;
+            if (event_vendor != SONY_VID ||
+                (product_id != SONY_DUALSENSE_PID &&
+                 product_id != SONY_DUALSENSE_EDGE_PID &&
+                 product_id != SONY_DUALSHOCK3_PID)) {
+                static uint32_t unmatched_event_logs = 0;
+                if (unmatched_event_logs < 8) {
+                    daemon_log(LOG_LEVEL_INFO,
+                               "Bluetooth event ignored (type=0x%02X, vendor_product=0x%08X)",
+                               ev_type, vendor_product);
+                    unmatched_event_logs++;
+                }
+                continue;
+            }
+
+            if (product_id == SONY_DUALSHOCK3_PID) {
+                static uint32_t ds3_event_logs = 0;
+                if (ds3_event_logs < 8) {
+                    daemon_log(LOG_LEVEL_INFO, "DualShock 3 BT event received (type=0x%02X)", ev_type);
+                    ds3_event_logs++;
+                }
+            }
+
             uint64_t address = 0;
             for (unsigned i = 0; i < 8; ++i) {
                 address |= ((uint64_t)buffer[pos + 8 + i]) << (8 * i);
+            }
+
+            BtDevice *event_dev = bt_dev_find(address);
+            if (!event_dev && (ev_type == 0x1A || ev_type == 0x1F)) {
+                event_dev = bt_dev_acquire(address, product_id);
             }
 
             if (ev_type == 0x18 || ev_type == 0x19) {
@@ -1467,9 +1598,17 @@ void bt_driver_poll_step(void) {
                     existing->extended_mode = false;
                     existing->initialized_output = false;
                     existing->capacity_patched = false;
+                    existing->capacity_attempts = 0;
+                    existing->capacity_retry_at = 0;
                     existing->output_errors = 0;
                     existing->output_unsupported = false;
                 }
+            }
+
+            if (ev_type == 0x1A && event_dev && product_id == SONY_DUALSHOCK3_PID) {
+                bt_activate_ds3(event_dev);
+                event_dev->capacity_attempts = 0;
+                event_dev->capacity_retry_at = 0;
             }
 
             for (int drain = 0; drain < 8; ++drain) {
@@ -1485,7 +1624,7 @@ void bt_driver_poll_step(void) {
                 long result = daemon_syscall(SYS_IOCTL, s_bt_fd, 0x80206233UL, (long)&req);
                 if (result <= 0 || result > (long)sizeof(report)) break;
 
-                BtDevice* dev = bt_dev_acquire(address);
+                BtDevice* dev = event_dev ? event_dev : bt_dev_acquire(address, product_id);
                 if (!dev) break;
 
                 if (drain > 0 && result == dev->last_raw_len &&
@@ -1505,6 +1644,10 @@ void bt_driver_poll_step(void) {
                         daemon_log(LOG_LEVEL_WARN, "DualSense BT (0x%llX): calibration decode failed (rc=%d)",
                                    (unsigned long long)address, rc);
                     }
+                } else if (dev->product_id == SONY_DUALSHOCK3_PID && result == 51 &&
+                           report[0] == 49 && report[1] == 0x1F) {
+                    dev->reports_seen++;
+                    decode_ds3_bt_report(dev, report + 2, 49);
                 } else if (result >= 2 && result <= 80 && report[0] + 2 == result &&
                            (report[1] == 0x1F || report[2] == 0x01 || report[2] == 0x31)) {
                     dev->reports_seen++;
@@ -1644,7 +1787,20 @@ int bt_driver_init(void) {
         s_bt_edge_reg_count = 1;
     }
 
-    if (s_bt_reg_count == 0 && s_bt_edge_reg_count == 0) {
+    /* DS3's PS4 Bluetooth HID path has only been researched on 13.52. On 14.00
+     * try registering its already-paired HID identity. A failed registration
+     * leaves the existing DualSense Bluetooth path untouched. */
+    s_bt_ds3_reg_count = 0;
+    if (s_current_fw_bcd == 0x1400) {
+        if (bt_register_pair(SONY_VID, SONY_DUALSHOCK3_PID, "dualshock3_experimental_fw1400") == 0) {
+            s_bt_ds3_reg_count = 1;
+            daemon_log(LOG_LEVEL_INFO, "DualShock 3 Bluetooth listener registered; paired controller required");
+        } else {
+            daemon_log(LOG_LEVEL_WARN, "DualShock 3 Bluetooth registration rejected on FW 14.00; no DS3 kernel patch was attempted");
+        }
+    }
+
+    if (s_bt_reg_count == 0 && s_bt_edge_reg_count == 0 && s_bt_ds3_reg_count == 0) {
         apply_kernel_allowlist_patch(1 /* restore */, s_current_fw_bcd);
         daemon_sys_close(s_bt_queue);
         s_bt_queue = -1;
@@ -1658,8 +1814,9 @@ int bt_driver_init(void) {
 
     s_bt_running = true;
     s_bt_supported = true;
-    daemon_log(LOG_LEVEL_INFO, "DualSense Bluetooth Subsystem initialized (FW 0x%04X, reg_count=%d)",
-               s_current_fw_bcd, s_bt_reg_count);
+    daemon_log(LOG_LEVEL_INFO,
+               "Bluetooth subsystem initialized (FW 0x%04X, DualSense registrations=%d, DS3 experimental registrations=%d)",
+               s_current_fw_bcd, s_bt_reg_count + s_bt_edge_reg_count, s_bt_ds3_reg_count);
     return 0;
 }
 
@@ -1677,8 +1834,12 @@ void bt_driver_shutdown(void) {
         for (int i = 0; i < s_bt_edge_reg_count; ++i) {
             bt_unregister_pair(SONY_VID, SONY_DUALSENSE_EDGE_PID);
         }
+        for (int i = 0; i < s_bt_ds3_reg_count; ++i) {
+            bt_unregister_pair(SONY_VID, SONY_DUALSHOCK3_PID);
+        }
         s_bt_reg_count = 0;
         s_bt_edge_reg_count = 0;
+        s_bt_ds3_reg_count = 0;
         s_bt_registered = false;
     }
 
@@ -1721,6 +1882,7 @@ int bt_driver_connected_count(void) {
 
 static void bt_send_rumble_dev(BtDevice* dev, uint8_t large, uint8_t small, const uint8_t color[3]) {
     if (!dev || !dev->connected || s_bt_fd < 0 || !dev->address) return;
+    if (dev->product_id == SONY_DUALSHOCK3_PID) return; // DS3 output reports are not DualSense reports.
     if (g_daemon_config.dualsense_bt_mode == 0 || dev->output_unsupported || !dev->capacity_patched) return;
 
     dev->last_output_time = daemon_sys_time_us();

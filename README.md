@@ -134,7 +134,11 @@ Unlike traditional game-specific hooks that only intercept inputs inside running
 | **Google Stadia Controller** | Official Stadia Controller (USB-C cable) | USB | Yes | Yes |
 | **Nintendo Switch Pro Controller** | Official Pro Controller & third-party Switch pads | USB | — | Yes (incl. 6-Axis Motion / Gyro) |
 | **Sony PlayStation 3 DualShock 3** | Official DualShock 3 (automatic handshake) | USB | Yes | Yes |
+| **Sony PlayStation 3 DualShock 3** | Official DualShock 3 (already paired; experimental listener) | **Bluetooth (FW 14.00, experimental)** | No | No |
 | **Sony PlayStation 5 DualSense / Edge** | Official DualSense & DualSense Edge | **Bluetooth (Wireless - FW 9.00+)** | Yes | Yes (incl. Speaker Audio, Triggers & Gyro) |
+
+> [!WARNING]
+> **Experimental DualShock 3 Bluetooth support on FW 14.00:** OneFamily attempts to register an already-paired DS3, request its Bluetooth operational mode, and translate standard input reports. The DS3 path is not yet verified on a PS4 console. Pairing is not handled by OneFamily, and vibration, motion, and touchpad emulation are unavailable. If registration or report-size adjustment is rejected, check `/data/onefamily/onefamily.log` for `DualShock 3 BT` entries. This experimental path is limited to FW 14.00; the existing DualSense Bluetooth implementation remains available.
 
 > [!TIP]
 > **How to Pair Sony PlayStation 5 DualSense / Edge via Bluetooth:**

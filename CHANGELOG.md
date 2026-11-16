@@ -2,6 +2,12 @@
 
 All notable changes to the OneFamily project are documented in this file.
 
+## Unreleased
+
+### Experimental DualShock 3 Bluetooth path (FW 14.00)
+- Added FW 14.00-only registration for an already-paired DualShock 3, Bluetooth F4 activation, 49-byte input report decoding, virtual-pad translation, and per-link input-capacity adjustment.
+- The DS3 path remains experimental pending console validation. Pairing, vibration, gyro, and touchpad forwarding are not implemented.
+
 ## [v1.2.2] - Official Release (2026-11-09)
 
 ### DualSense In-Game Speaker Audio Streaming & Volume Control (Issue #61)

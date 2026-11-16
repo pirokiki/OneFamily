@@ -35,7 +35,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/openorbis"
           curl --fail --location --retry 3 \
-            https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/v0.5.4.tar.gz \
+            https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v0.5.4/toolchain-llvm-18.tar.gz \
             | tar -xz -C "$RUNNER_TEMP/openorbis"
           echo "OO_PS4_TOOLCHAIN=$RUNNER_TEMP/openorbis" >> "$GITHUB_ENV"
 

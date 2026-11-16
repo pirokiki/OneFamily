@@ -81,7 +81,7 @@ if [[ ! -x "${CREATE_FSELF}" ]]; then
 fi
 "${CREATE_FSELF}" -in="${PROJECT}/app/bin/app.elf" \
     -out="${PROJECT}/app/bin/app.oelf" --eboot "eboot.bin" \
-    --paid 0x3800000000000011
+    --paid 0x3800000000000011 --library-path "${TOOLCHAIN}/lib"
 
 PKGTOOL="${BIN_DIR}/PkgTool.Core"
 if [[ ! -x "${PKGTOOL}" ]]; then

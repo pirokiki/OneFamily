@@ -3,12 +3,16 @@ set -euo pipefail
 
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLCHAIN="${OO_PS4_TOOLCHAIN:-${PROJECT}/../OpenOrbis-PS4-Toolchain}"
-BIN_DIR="${TOOLCHAIN}/bin/linux"
 
 if [[ ! -f "${TOOLCHAIN}/link.x" ]]; then
-    echo "OpenOrbis toolchain was not found at ${TOOLCHAIN}" >&2
-    exit 1
+    LINKER_SCRIPT="$(find "${TOOLCHAIN}" -maxdepth 5 -type f -name link.x -print -quit)"
+    if [[ -z "${LINKER_SCRIPT}" ]]; then
+        echo "OpenOrbis link.x was not found under ${TOOLCHAIN}" >&2
+        exit 1
+    fi
+    TOOLCHAIN="$(dirname "${LINKER_SCRIPT}")"
 fi
+BIN_DIR="${TOOLCHAIN}/bin/linux"
 
 mkdir -p "${PROJECT}/bin" "${PROJECT}/daemon/obj" "${PROJECT}/app/obj" "${PROJECT}/app/bin" "${PROJECT}/app/assets/payload"
 

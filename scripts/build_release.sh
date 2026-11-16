@@ -84,8 +84,9 @@ fi
     --paid 0x3800000000000011 --library-path "${TOOLCHAIN}/lib"
 
 PKGTOOL="${BIN_DIR}/PkgTool.Core"
-if [[ -f "${BIN_DIR}/PkgTool.Core.dll" ]]; then
-    run_pkgtool() { dotnet --roll-forward LatestMajor "${BIN_DIR}/PkgTool.Core.dll" "$@"; }
+PKGTOOL_DLL="${PKGTOOL_DLL:-${BIN_DIR}/PkgTool.Core.dll}"
+if [[ -f "${PKGTOOL_DLL}" ]]; then
+    run_pkgtool() { dotnet --roll-forward LatestMajor "${PKGTOOL_DLL}" "$@"; }
 elif [[ -x "${PKGTOOL}" ]]; then
     run_pkgtool() { "${PKGTOOL}" "$@"; }
 else

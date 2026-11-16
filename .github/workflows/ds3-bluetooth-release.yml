@@ -39,10 +39,19 @@ jobs:
             | tar -xz -C "$RUNNER_TEMP/openorbis"
           echo "OO_PS4_TOOLCHAIN=$RUNNER_TEMP/openorbis" >> "$GITHUB_ENV"
 
+      - name: Download managed PkgTool.Core
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkgtool"
+          curl --fail --location --retry 3 \
+            https://github.com/maxton/LibOrbisPkg/releases/download/v0.2/PkgTool.Core-0.2.231.zip \
+            -o "$RUNNER_TEMP/pkgtool/PkgTool.Core.zip"
+          python3 -m zipfile -e "$RUNNER_TEMP/pkgtool/PkgTool.Core.zip" "$RUNNER_TEMP/pkgtool"
+          PKGTOOL_DLL="$(find "$RUNNER_TEMP/pkgtool" -name PkgTool.Core.dll -print -quit)"
+          test -n "$PKGTOOL_DLL"
+          echo "PKGTOOL_DLL=$PKGTOOL_DLL" >> "$GITHUB_ENV"
+
       - name: Build and validate PKG
         run: bash scripts/build_release.sh
-        env:
-          DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1'
 
       - name: Publish test prerelease
         uses: softprops/action-gh-release@v2

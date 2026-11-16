@@ -1,6 +1,7 @@
 name: Build DS3 Bluetooth test package
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feature/ds3-bluetooth
